@@ -1,34 +1,92 @@
 #!/bin/bash
-
-set -e
-
-if [ ! -f $(basename $0) ]; then
-    cd /usr/local/kcptun_plugins;
-fi
-
-source ./lib
-
-print_usage () {
-    echo "USAGE: ss-local ... --plugin kcptun-client-plugin --plugin-opts \"key=YOUR_KEY;raw=YES\""
-    echo "   or  kcptun-client-plugin upgrade"
-    echo "           upgrade KCPTUN and UDP2RAW binaries"
+# 
+# Aghostd Universal
+# ElitetNode Server Fastlane Service
+# - eLitex Server Integration
+# (c) Elitet Inc. 2018-2019
+# Jared Hillier, Lindsay J. Gibson
+# 
+# Plugin Settings
+# - Copyrights
+branding="QuarProxy Service Extension"
+copyright="(c) eLitet Inc. 2018-2019"
+forking="forked from w1ndy/kcptun-plugins"
+# - ANSI Functions
+ansi() { echo -e "\e[${1}m${@:2}\e[0m"; }
+b() { ansi 1 "$@"; }
+d()	{ ansi 2 "$@"; }
+i() { ansi 3 "$@"; }
+u() { ansi 4 "$@"; }
+_() { echo -e "($(u $@))"; }
+red() { ansi 31 "$@"; }
+green() { ansi 32 "$@"; }
+yellow() { ansi 33 "$@"; }
+# - Banners
+PLUGIN_BANNER="[eLxKCPd]"
+KCP_BANNER="$PLUGIN_BANNER xKCPd  "
+RAW_BANNER="$PLUGIN_BANNER UDP2RAW"
+usage() {
+    echo
+    echo -e "$branding"
+    echo -e "$copyright"
+    echo -e "- xKCPd plugin client integration"
+    echo -e "  $forking"
+    echo -e "Syntax: ss-{local|tunnel} ... --plugin $0 
+            --plugin-opts \"{config|key|crypt|mode|mtu|sndwnd|rcvwnd
+            |datashard|parityshard|dscp|nocomp|quiet|params|raw}:<value>\""
+    echo
 }
-
-set_raw_defaults () {
-    if [ ! "$raw" == "YES" ]; then
-        info "UDP2RAW is disabled."
-        return 0;
+# - Messenger
+info() { green "INFO:" $@; }
+warn() { yello "WARN:" $@; }
+error() { red "EMERG:" $@; exit 1; }
+indent() { sed 's/^/  /' ; }
+# - Directories
+KCP_BINARY="/bin/kcptun"
+RAW_BINARY="/bin/udp2raw"
+# - Utils
+bool() { [ "$1" == "true" ] && echo $2 || echo $3 ; }
+shufPortUnused() {
+    read lower_port upper_port < /proc/sys/net/ipv4/ip_local_port_range
+    while :
+    do
+        PORT=$(shuf -i $lower_port-$upper_port -n 1)
+        ss -lpn | grep -q ":$PORT" || break
+    done
+}
+read_opts() {
+    IFS=';' read -ra OPTS <<< "$SS_PLUGIN_OPTIONS"
+    for i in "${OPTS[@]}"; do
+        eval $i
+    done
+}
+cleanup() { pkill -P $$ ; }
+spawn() {
+    trap cleanup EXIT
+    $KCP_BINARY $KCP_PARAMS 2>&1 | sed "s/^/$KCP_BANNER/" &
+    local kcp=$!
+    if [ ! "$raw" == "true" ]; then
+        wait $kcp;
+    else
+        trap 'exit 0' CHLD
+        $RAW_BINARY $RAW_PARAMS 2>&1 | sed "s/^/$RAW_BANNER/" &
+        local raw=$!; set -m; wait; set +m;
     fi
+    cleanup
+}
+# < --------------------------------- >
 
-    info "UDP2RAW is enabled.";
+
+set_raw_defaults() {
+    [ ! "$raw" == "true" ] && return 0 || info "UDP2RAW enabled"
 
     if [ ! -z $raw_config ]; then
-        info "Use UDP2RAW config $raw_config."
+        info "Using UDP2RAW config $raw_config."
         RAW_PARAMS="--conf-file $config"
         return 0;
     fi
 
-    find_unused_port
+    shufPortUnused
     RAW_HOST="127.0.0.1"
     RAW_PORT="$PORT"
 
@@ -46,7 +104,7 @@ set_raw_defaults () {
     RAW_PARAMS="-c -a $RAW_PARAMS_LISTEN $RAW_PARAMS_REMOTE $RAW_PARAMS_MODE $RAW_PARAMS_KEY $RAW_PARAMS_CIPHER $RAW_PARAMS_AUTH $raw_params"
 }
 
-set_kcp_defaults () {
+set_kcp_defaults() {
     if [ ! -z $config ]; then
         info "Use KCPTUN config $config."
         KCP_PARAMS="-c $config"
@@ -55,7 +113,7 @@ set_kcp_defaults () {
 
     REMOTE_HOST="$SS_REMOTE_HOST"
     REMOTE_PORT="$SS_REMOTE_PORT"
-    if [ "$raw" == "YES" ]; then
+    if [ "$raw" == "true" ]; then
         REMOTE_HOST="$RAW_HOST"
         REMOTE_PORT="$RAW_PORT"
     fi
@@ -70,7 +128,7 @@ set_kcp_defaults () {
     KCP_PARAMS_CRYPT="--crypt ${crypt:-aes}"
     KCP_PARAMS_MODE="--mode ${mode:-fast}"
 
-    if [ "$raw" == "YES" ]; then
+    if [ "$raw" == "true" ]; then
         # default MTU to 1200 in RAW mode
         KCP_PARAMS_MTU="--mtu ${mtu:-1200}";
     else
@@ -88,26 +146,12 @@ set_kcp_defaults () {
     KCP_PARAMS="$KCP_PARAMS_LISTEN $KCP_PARAMS_TARGET $KCP_PARAMS_KEY $KCP_PARAMS_CRYPT $KCP_PARAMS_MODE $KCP_PARAMS_MTU $KCP_PARAMS_SNDWND $KCP_PARAMS_RCVWND $KCP_PARAMS_DATASHARD $KCP_PARAMS_PARITYSHARD $KCP_PARAMS_DSCP $KCP_PARAMS_NOCOMP $KCP_PARAMS_QUIET $params"
 }
 
-main () {
-    if [ -z $SS_LOCAL_PORT ]; then
-        case "$1" in
-            upgrade)
-                rm -rf bin
-                raw="YES"
-                validate_client_assets
-                ;;
-            *)
-                print_usage
-                exit 1
-        esac
-        exit 0;
-    fi
-
+main() {
+    [ -z $SS_LOCAL_PORT ] && { usage | indent; exit 1; }
     read_opts
-    validate_client_assets
-    set_raw_defaults
     set_kcp_defaults
-    spawn_and_wait
+    set_raw_defaults
+    spawn
 }
 
 main $@
